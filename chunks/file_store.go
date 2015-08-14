@@ -14,38 +14,18 @@ import (
 
 	"github.com/attic-labs/noms/d"
 	"github.com/attic-labs/noms/ref"
+	"github.com/golang/leveldb"
+	"github.com/golang/leveldb/db"
 )
 
-func (f FileStore) readRefMap() {
-	for true {
-		var s ref.Sha1Digest
-		var i int64
-
-		err := binary.Read(f.refMapFile, binary.LittleEndian, &s)
-		if err != nil {
-			return
-		}
-		err = binary.Read(f.refMapFile, binary.LittleEndian, &i)
-		if err != nil {
-			return
-		}
-
-		f.rm[s] = i
-	}
-}
-
-func (f FileStore) appendRefMap(r ref.Ref, i int64) {
-	err := binary.Write(f.refMapFile, binary.LittleEndian, r.Digest())
-	d.Chk.NoError(err)
-	err = binary.Write(f.refMapFile, binary.LittleEndian, i)
-	d.Chk.NoError(err)
-	f.rm[r.Digest()] = i
+type DBPointer struct {
+	db *leveldb.DB
 }
 
 type FileStore struct {
-	dir, root             string
-	chunkFile, refMapFile *os.File
-	rm                    map[ref.Sha1Digest]int64
+	dir, root string
+	chunkFile *os.File
+	dbPointer *DBPointer
 	// For testing
 	mkdirAll mkdirAllFn
 }
@@ -55,18 +35,17 @@ type mkdirAllFn func(path string, perm os.FileMode) error
 func NewFileStore(dir, root, refMap, chunks string) FileStore {
 	d.Chk.NotEmpty(dir)
 	d.Chk.NotEmpty(root)
-	d.Chk.NotEmpty(refMap)
 	d.Chk.NotEmpty(chunks)
 	d.Chk.NoError(os.MkdirAll(dir, 0700))
 
 	chunkFile, err := os.OpenFile(path.Join(dir, chunks), os.O_APPEND|os.O_CREATE|os.O_RDWR, os.ModePerm)
 	d.Chk.NoError(err)
 
-	refMapFile, err := os.OpenFile(path.Join(dir, refMap), os.O_APPEND|os.O_CREATE|os.O_RDWR, os.ModePerm)
-	d.Chk.NoError(err)
+	db, err := leveldb.Open(dir, &db.Options{
+		Compression: db.NoCompression,
+	})
 
-	fs := FileStore{dir, path.Join(dir, root), chunkFile, refMapFile, make(map[ref.Sha1Digest]int64), os.MkdirAll}
-	fs.readRefMap()
+	fs := FileStore{dir, path.Join(dir, root), chunkFile, &DBPointer{db}, os.MkdirAll}
 	return fs
 }
 
@@ -99,6 +78,18 @@ func (f FileStore) UpdateRoot(current, last ref.Ref) bool {
 	syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
 	defer file.Close()
 
+	d.Chk.NotNil(f.dbPointer.db)
+
+	f.dbPointer.db.Close()
+	f.dbPointer.db = nil
+	db, err := leveldb.Open(f.dir, &db.Options{
+		Compression: db.NoCompression,
+	})
+
+	f.dbPointer.db = db
+	d.Chk.NoError(err)
+	d.Chk.NotNil(f.dbPointer.db)
+
 	existing := readRef(file)
 	if existing != last {
 		return false
@@ -109,21 +100,41 @@ func (f FileStore) UpdateRoot(current, last ref.Ref) bool {
 	file.Write([]byte(current.String()))
 
 	f.chunkFile.Sync()
-	f.refMapFile.Sync()
 	return true
 }
 
-func (f FileStore) Get(ref ref.Ref) (io.ReadCloser, error) {
-	i, ok := f.rm[ref.Digest()]
-	if !ok {
-		return nil, nil
+func (f FileStore) getIndex(ref ref.Ref) (int64, error) {
+	digest := ref.Digest()
+	v, err := f.dbPointer.db.Get(digest[:], nil)
+	if err != nil {
+		return 0, err
 	}
 
-	_, err := f.chunkFile.Seek(i, 0)
+	var i int64
+	binary.Read(bytes.NewReader(v), binary.LittleEndian, &i)
+	return i, nil
+}
+
+func (f FileStore) putIndex(ref ref.Ref, i int64) {
+	digest := ref.Digest()
+	var buf bytes.Buffer
+	err := binary.Write(&buf, binary.LittleEndian, i)
+	d.Chk.NoError(err)
+	err = f.dbPointer.db.Set(digest[:], buf.Bytes(), nil)
+	d.Chk.NoError(err)
+}
+
+func (f FileStore) Get(ref ref.Ref) (io.ReadCloser, error) {
+	i, err := f.getIndex(ref)
+	if err != nil {
+		return nil, nil
+	}
+	_, err = f.chunkFile.Seek(i, 0)
 	d.Chk.NoError(err)
 
 	var l int64
-	binary.Read(f.chunkFile, binary.LittleEndian, &l)
+	err = binary.Read(f.chunkFile, binary.LittleEndian, &l)
+	d.Chk.NoError(err)
 	lr := io.LimitReader(f.chunkFile, l)
 	return ioutil.NopCloser(lr), nil
 }
@@ -166,7 +177,8 @@ func (w *fileChunkWriter) Close() error {
 	}
 
 	r := ref.FromHash(w.hash)
-	if _, ok := w.fs.rm[r.Digest()]; ok {
+	_, err := w.fs.getIndex(r)
+	if err == nil {
 		return nil
 	}
 
@@ -178,7 +190,7 @@ func (w *fileChunkWriter) Close() error {
 	written, err := io.Copy(w.fs.chunkFile, w.buffer)
 	d.Chk.NoError(err)
 	d.Chk.True(totalBytes == written, "Too few bytes written.") // BUG #83
-	w.fs.appendRefMap(r, i)
+	w.fs.putIndex(r, i)
 	w.buffer = nil
 	return nil
 }
