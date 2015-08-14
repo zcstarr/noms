@@ -2,6 +2,7 @@ package chunks
 
 import (
 	"bytes"
+	"encoding/binary"
 	"flag"
 	"hash"
 	"io"
@@ -15,20 +16,58 @@ import (
 	"github.com/attic-labs/noms/ref"
 )
 
-type FileStore struct {
-	dir, root string
+func (f FileStore) readRefMap() {
+	for true {
+		var s ref.Sha1Digest
+		var i int64
 
+		err := binary.Read(f.refMapFile, binary.LittleEndian, &s)
+		if err != nil {
+			return
+		}
+		err = binary.Read(f.refMapFile, binary.LittleEndian, &i)
+		if err != nil {
+			return
+		}
+
+		f.rm[s] = i
+	}
+}
+
+func (f FileStore) appendRefMap(r ref.Ref, i int64) {
+	err := binary.Write(f.refMapFile, binary.LittleEndian, r.Digest())
+	d.Chk.NoError(err)
+	err = binary.Write(f.refMapFile, binary.LittleEndian, i)
+	d.Chk.NoError(err)
+	f.rm[r.Digest()] = i
+}
+
+type FileStore struct {
+	dir, root             string
+	chunkFile, refMapFile *os.File
+	rm                    map[ref.Sha1Digest]int64
 	// For testing
 	mkdirAll mkdirAllFn
 }
 
 type mkdirAllFn func(path string, perm os.FileMode) error
 
-func NewFileStore(dir, root string) FileStore {
+func NewFileStore(dir, root, refMap, chunks string) FileStore {
 	d.Chk.NotEmpty(dir)
 	d.Chk.NotEmpty(root)
+	d.Chk.NotEmpty(refMap)
+	d.Chk.NotEmpty(chunks)
 	d.Chk.NoError(os.MkdirAll(dir, 0700))
-	return FileStore{dir, path.Join(dir, root), os.MkdirAll}
+
+	chunkFile, err := os.OpenFile(path.Join(dir, chunks), os.O_APPEND|os.O_CREATE|os.O_RDWR, os.ModePerm)
+	d.Chk.NoError(err)
+
+	refMapFile, err := os.OpenFile(path.Join(dir, refMap), os.O_APPEND|os.O_CREATE|os.O_RDWR, os.ModePerm)
+	d.Chk.NoError(err)
+
+	fs := FileStore{dir, path.Join(dir, root), chunkFile, refMapFile, make(map[ref.Sha1Digest]int64), os.MkdirAll}
+	fs.readRefMap()
+	return fs
 }
 
 func readRef(file *os.File) ref.Ref {
@@ -68,21 +107,32 @@ func (f FileStore) UpdateRoot(current, last ref.Ref) bool {
 	file.Seek(0, 0)
 	file.Truncate(0)
 	file.Write([]byte(current.String()))
+
+	f.chunkFile.Sync()
+	f.refMapFile.Sync()
 	return true
 }
 
 func (f FileStore) Get(ref ref.Ref) (io.ReadCloser, error) {
-	r, err := os.Open(getPath(f.dir, ref))
-	if os.IsNotExist(err) {
+	i, ok := f.rm[ref.Digest()]
+	if !ok {
 		return nil, nil
 	}
-	return r, err
+
+	_, err := f.chunkFile.Seek(i, 0)
+	d.Chk.NoError(err)
+
+	var l int64
+	binary.Read(f.chunkFile, binary.LittleEndian, &l)
+	lr := io.LimitReader(f.chunkFile, l)
+	return ioutil.NopCloser(lr), nil
 }
 
 func (f FileStore) Put() ChunkWriter {
 	b := &bytes.Buffer{}
 	h := ref.NewHash()
 	return &fileChunkWriter{
+		fs:       f,
 		root:     f.dir,
 		buffer:   b,
 		writer:   io.MultiWriter(b, h),
@@ -92,6 +142,7 @@ func (f FileStore) Put() ChunkWriter {
 }
 
 type fileChunkWriter struct {
+	fs       FileStore
 	root     string
 	buffer   *bytes.Buffer
 	writer   io.Writer
@@ -114,27 +165,20 @@ func (w *fileChunkWriter) Close() error {
 		return nil
 	}
 
-	p := getPath(w.root, ref.FromHash(w.hash))
-
-	// If we already have this file, then nothing to do. Hooray.
-	if _, err := os.Stat(p); err == nil {
+	r := ref.FromHash(w.hash)
+	if _, ok := w.fs.rm[r.Digest()]; ok {
 		return nil
 	}
 
-	err := w.mkdirAll(path.Dir(p), 0700)
+	i, err := w.fs.chunkFile.Seek(0, 2)
 	d.Chk.NoError(err)
 
-	file, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE, os.ModePerm)
-	defer file.Close()
-	if err != nil {
-		d.Chk.True(os.IsExist(err), "%+v\n", err)
-	}
-
-	totalBytes := w.buffer.Len()
-	written, err := io.Copy(file, w.buffer)
+	totalBytes := int64(w.buffer.Len())
+	binary.Write(w.fs.chunkFile, binary.LittleEndian, totalBytes)
+	written, err := io.Copy(w.fs.chunkFile, w.buffer)
 	d.Chk.NoError(err)
-	d.Chk.True(int64(totalBytes) == written, "Too few bytes written.") // BUG #83
-
+	d.Chk.True(totalBytes == written, "Too few bytes written.") // BUG #83
+	w.fs.appendRefMap(r, i)
 	w.buffer = nil
 	return nil
 }
@@ -146,14 +190,18 @@ func getPath(root string, ref ref.Ref) string {
 }
 
 type fileStoreFlags struct {
-	dir  *string
-	root *string
+	dir    *string
+	root   *string
+	refMap *string
+	chunks *string
 }
 
 func fileFlags(prefix string) fileStoreFlags {
 	return fileStoreFlags{
 		flag.String(prefix+"fs", "", "directory to use for a file-based chunkstore"),
 		flag.String(prefix+"fs-root", "root", "filename which holds the root ref in the filestore"),
+		flag.String(prefix+"fs-refMap", "refMap", "filename which holds the ref offsets into the chunks file"),
+		flag.String(prefix+"fs-chunks", "chunks", "filename which holds the chunk data"),
 	}
 }
 
@@ -161,7 +209,7 @@ func (f fileStoreFlags) createStore() ChunkStore {
 	if *f.dir == "" || *f.root == "" {
 		return nil
 	} else {
-		fs := NewFileStore(*f.dir, *f.root)
+		fs := NewFileStore(*f.dir, *f.root, *f.refMap, *f.chunks)
 		return &fs
 	}
 }
