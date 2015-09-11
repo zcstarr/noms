@@ -45,7 +45,7 @@ func (r *randReader) Read(p []byte) (n int, err error) {
 }
 
 func getRandomReader() io.Reader {
-	return &randReader{rand.NewSource(42), 0, 5e5}
+	return &randReader{rand.NewSource(42), 0, 1e5}
 }
 
 func getRandomBlob(t *testing.T) compoundBlob {
@@ -63,26 +63,33 @@ func TestCompoundBlobReader(t *testing.T) {
 		t.Skip("Skipping test in short mode.")
 	}
 	assert := assert.New(t)
-	cs := &chunks.MemoryStore{}
+	//cs := &chunks.MemoryStore{}
 
-	cb := getTestCompoundBlob("hello", "world")
-	bs, err := ioutil.ReadAll(cb.Reader())
-	assert.NoError(err)
-	assert.Equal("helloworld", string(bs))
+	/*
+		cb := getTestCompoundBlob("hello", "world")
+		bs, err := ioutil.ReadAll(cb.Reader())
+		assert.NoError(err)
+		assert.Equal("helloworld", string(bs))
+	*/
 
 	ab := getRandomBlob(t)
-	bs, err = ioutil.ReadAll(ab.Reader())
+	bs, err := ioutil.ReadAll(ab.Reader())
+	fmt.Println("rb len", len(bs))
 	assert.NoError(err)
 	r := getRandomReader()
 	bs2, err := ioutil.ReadAll(r)
+	fmt.Println("rr len", len(bs2))
+	fmt.Println(bs[len(bs)-25:], bs2[len(bs2)-25:])
 	assert.Equal(bs2, bs)
+	/*
 
-	ref := WriteValue(cb, cs)
+		ref := WriteValue(cb, cs)
 
-	cb2 := ReadValue(ref, cs)
-	bs3, err := ioutil.ReadAll(cb2.(Blob).Reader())
-	assert.NoError(err)
-	assert.Equal("helloworld", string(bs3))
+		cb2 := ReadValue(ref, cs)
+		bs3, err := ioutil.ReadAll(cb2.(Blob).Reader())
+		assert.NoError(err)
+		assert.Equal("helloworld", string(bs3))
+	*/
 }
 
 type testBlob struct {
