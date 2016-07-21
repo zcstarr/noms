@@ -114,38 +114,24 @@ func runLog(args []string) int {
 // Prints the information for one commit in the log, including ascii graph on left side of commits if
 // -graph arg is true.
 func printCommit(node LogNode, w io.Writer, db datas.Database) (err error) {
-	maxMetaFieldNameLength := func(commit types.Struct) int {
-		maxLen := 0
-		meta := commit.Get(datas.MetaField).(types.Struct)
-		meta.Type().Desc.(types.StructDesc).IterFields(func(name string, t *types.Type) {
-			maxLen = max(maxLen, len(name))
-		})
-		return maxLen
-	}
-
 	hashStr := node.commit.Hash().String()
 	if useColor {
-		hashStr = ansi.Color("commit "+hashStr, "red+h")
+		hashStr = ansi.Color(hashStr, "red+h")
 	}
 
-	maxFieldNameLen := maxMetaFieldNameLength(node.commit)
-
-	parentLabel := "Parent"
-	parentValue := "None"
+	var parentStr string
 	parents := commitRefsFromSet(node.commit.Get(datas.ParentsField).(types.Set))
 	if len(parents) > 1 {
 		pstrings := make([]string, len(parents))
 		for i, p := range parents {
 			pstrings[i] = p.TargetHash().String()
 		}
-		parentLabel = "Merge"
-		parentValue = strings.Join(pstrings, " ")
+		parentStr = fmt.Sprintf("Merge: %s", strings.Join(pstrings, " "))
 	} else if len(parents) == 1 {
-		parentValue = parents[0].TargetHash().String()
+		parentStr = fmt.Sprintf("Parent: %s", parents[0].TargetHash().String())
+	} else {
+		parentStr = "Parent: None"
 	}
-
-	maxFieldNameLen = max(maxFieldNameLen, len(parentLabel))
-	parentStr := fmt.Sprintf("%-*s %s", maxFieldNameLen+1, parentLabel+":", parentValue)
 
 	if oneline {
 		fmt.Fprintf(w, "%s (%s)\n", hashStr, parentStr)
@@ -154,19 +140,12 @@ func printCommit(node LogNode, w io.Writer, db datas.Database) (err error) {
 
 	fmt.Fprintf(w, "%s%s\n", genGraph(node, 0), hashStr)
 	fmt.Fprintf(w, "%s%s\n", genGraph(node, 1), parentStr)
-	lineno := 1
 
 	if maxLines != 0 {
-		lineno, err = writeMetaLines(node, maxLines, lineno, maxFieldNameLen, w)
-		if err != nil && err != MaxLinesErr {
-			fmt.Fprintf(w, "error: %s\n", err)
-			return
-		}
-
 		if showValue {
-			_, err = writeCommitLines(node, maxLines, lineno, w)
+			_, err = writeCommitLines(node, maxLines, 1, w)
 		} else {
-			_, err = writeDiffLines(node, db, maxLines, lineno, w)
+			_, err = writeDiffLines(node, db, maxLines, 1, w)
 		}
 	}
 	return
@@ -223,20 +202,6 @@ func genGraph(node LogNode, lineno int) string {
 	}
 
 	return string(buf)
-}
-
-func writeMetaLines(node LogNode, maxLines, lineno, maxLabelLen int, w io.Writer) (int, error) {
-	meta := node.commit.Get(datas.MetaField).(types.Struct)
-	mlw := &maxLineWriter{numLines: lineno, maxLines: maxLines, node: node, dest: w, needsPrefix: true, showGraph: showGraph}
-	err := d.Try(func() {
-		meta.Type().Desc.(types.StructDesc).IterFields(func(fieldName string, t *types.Type) {
-			v := meta.Get(fieldName)
-			fmt.Fprintf(mlw, "%-*s", maxLabelLen+2, strings.Title(fieldName)+":")
-			types.WriteEncodedValue(mlw, v)
-			fmt.Fprintf(mlw, "\n")
-		})
-	})
-	return mlw.numLines, err
 }
 
 func writeCommitLines(node LogNode, maxLines, lineno int, w io.Writer) (lineCnt int, err error) {

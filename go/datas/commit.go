@@ -12,19 +12,16 @@ import (
 const (
 	ParentsField = "parents"
 	ValueField   = "value"
-	MetaField    = "meta"
 )
 
-var valueCommitType = makeCommitType(types.ValueType, types.EmptyStructType)
+var valueCommitType = makeCommitType(types.ValueType)
 
 // NewCommit creates a new commit object. The type of Commit is computed based on the type of the value and the type of the parents.
-// It also includes a Meta field whose type is always the empty struct
 //
 // For the first commit we get:
 //
 // ```
 // struct Commit {
-//   meta: struct {},
 //   parents: Set<Ref<Cycle<0>>>,
 //   value: T,
 // }
@@ -36,7 +33,6 @@ var valueCommitType = makeCommitType(types.ValueType, types.EmptyStructType)
 //
 // ```
 // struct Commit {
-//   meta: struct {},
 //   parents: Set<Ref<struct Commit {
 //     parents: Set<Ref<Cycle<0>>>,
 //     value: T | U
@@ -47,9 +43,9 @@ var valueCommitType = makeCommitType(types.ValueType, types.EmptyStructType)
 //
 // The new type gets combined as a union type for the value of the inner commit struct.
 
-func NewCommit(value types.Value, parents types.Set, meta types.Struct) types.Struct {
+func NewCommit(value types.Value, parents types.Set) types.Struct {
 	t := makeCommitType(value.Type(), valueTypesFromParents(parents)...)
-	return types.NewStructWithType(t, types.ValueSlice{meta, parents, value})
+	return types.NewStructWithType(t, types.ValueSlice{parents, value})
 }
 
 func makeCommitType(valueType *types.Type, parentsValueTypes ...*types.Type) *types.Type {
@@ -57,27 +53,23 @@ func makeCommitType(valueType *types.Type, parentsValueTypes ...*types.Type) *ty
 	copy(tmp, parentsValueTypes)
 	tmp[len(tmp)-1] = valueType
 	parentsValueUnionType := types.MakeUnionType(tmp...)
-	fieldNames := []string{MetaField, ParentsField, ValueField}
-
 	if parentsValueUnionType.Equals(valueType) {
-		return types.MakeStructType("Commit", fieldNames, []*types.Type{
-			types.EmptyStructType,
+		return types.MakeStructType("Commit", []string{
+			ParentsField, ValueField,
+		}, []*types.Type{
 			types.MakeSetType(types.MakeRefType(types.MakeCycleType(0))),
 			valueType,
 		})
 	}
-
-	fieldTypes := []*types.Type{
-		types.EmptyStructType,
-		types.MakeSetType(types.MakeRefType(
-			types.MakeStructType("Commit", fieldNames, []*types.Type{
-				types.EmptyStructType,
-				types.MakeSetType(types.MakeRefType(types.MakeCycleType(0))),
-				parentsValueUnionType,
-			}))),
+	return types.MakeStructType("Commit", []string{ParentsField, ValueField}, []*types.Type{
+		types.MakeSetType(types.MakeRefType(types.MakeStructType("Commit", []string{
+			ParentsField, ValueField,
+		}, []*types.Type{
+			types.MakeSetType(types.MakeRefType(types.MakeCycleType(0))),
+			parentsValueUnionType,
+		}))),
 		valueType,
-	}
-	return types.MakeStructType("Commit", fieldNames, fieldTypes)
+	})
 }
 
 func valueTypesFromParents(parents types.Set) []*types.Type {

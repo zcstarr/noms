@@ -44,7 +44,7 @@ func TestAbsolutePaths(t *testing.T) {
 	db.WriteValue(emptySet)
 
 	var err error
-	db, err = db.Commit("ds", datas.NewCommit(list, types.NewSet(), types.EmptyStruct))
+	db, err = db.Commit("ds", datas.NewCommit(list, types.NewSet()))
 	assert.NoError(err)
 	head := db.Head("ds")
 

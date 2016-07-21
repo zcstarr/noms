@@ -289,11 +289,7 @@ func (w *hrsWriter) writeStructType(t *Type, parentStructTypes []*Type) {
 
 	w.write("struct ")
 	w.write(t.Name())
-	openBrace := "{"
-	if t.Name() != "" {
-		openBrace = " {"
-	}
-	w.write(openBrace)
+	w.write(" {")
 	w.indent()
 	desc := t.Desc.(StructDesc)
 	first := true
