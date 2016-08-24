@@ -175,6 +175,26 @@ func TestEscStructField(t *testing.T) {
 		assert.Equal(expected, EscapeStructField(orig))
 	}
 }
+func TestEscStructField2(t *testing.T) {
+	assert := assert.New(t)
+	cases := []string{
+		"a", "a",
+		"AaZz19_", "AaZz19_",
+		"Q", "Q51",
+		"AQ1", "AQ511",
+		"INSPECTIONQ20STATUS", "INSPECTIONQ5120STATUS",
+		"$", "Q24",
+		"_content", "Q5Fcontent",
+		"Few ¢ents Short", "FewQ20QC2A2entsQ20Short",
+		"💩", "QF09F92A9",
+		"https://picasaweb.google.com/data", "httpsQ3AQ2FQ2FpicasawebQ2EgoogleQ2EcomQ2Fdata",
+	}
+
+	for i := 0; i < len(cases); i += 2 {
+		orig, expected := cases[i], cases[i+1]
+		assert.Equal(expected, EscapeStructFieldCSV(orig))
+	}
+}
 
 func TestCycles(t *testing.T) {
 	// Success is this not recursing infinitely and blowing the stack

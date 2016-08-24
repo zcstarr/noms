@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/attic-labs/noms/go/d"
 	"github.com/attic-labs/noms/go/hash"
@@ -171,10 +172,22 @@ func (s1 Struct) Diff(s2 Struct, changes chan<- ValueChanged, closeChan <-chan s
 var escapeChar = "Q"
 var headFieldNamePattern = regexp.MustCompile("[a-zA-Z]")
 var tailFieldNamePattern = regexp.MustCompile("[a-zA-Z0-9_]")
+var whiteSpacePattern = regexp.MustCompile("[\t\n\v\f\r ]")
 
-//var fieldNameComponentRe = regexp.MustCompile("^" + headFieldNamePattern.String() + tailFieldNamePattern.String() + "*")
 var fieldNameComponentRe = regexp.MustCompile("^" + headFieldNamePattern.String() + tailFieldNamePattern.String() + "*")
 var fieldNameRe = regexp.MustCompile(fieldNameComponentRe.String() + "$")
+
+type encodingFunc func(string, *regexp.Regexp) string
+
+func EscapeFields(input string, encode encodingFunc) string {
+	output := ""
+	pattern := headFieldNamePattern
+	for _, ch := range input {
+		output += encode(string([]rune{ch}), pattern)
+		pattern = tailFieldNamePattern
+	}
+	return output
+}
 
 // Escapes names for use as noms structs. Disallowed characters are encoded as
 // 'Q<hex-encoded-utf8-bytes>'. Note that Q itself is also escaped since it is
@@ -194,13 +207,28 @@ func EscapeStructField(input string) string {
 		buf.WriteString(hs)
 		return buf.String()
 	}
+	output := EscapeFields(input, encode)
+	IsValidStructFieldName(output)
+	return output
+}
 
-	output := ""
-	pattern := headFieldNamePattern
-	for _, ch := range input {
-		output += encode(string([]rune{ch}), pattern)
-		pattern = tailFieldNamePattern
+func EscapeStructFieldCSV(input string) string {
+	encode := func(s1 string, p *regexp.Regexp) string {
+		if p.MatchString(s1) && s1 != escapeChar {
+			return s1
+		}
+		return ""
 	}
+	splitFields := strings.Fields(input)
+	output := EscapeFields(splitFields[0], encode)
+	if len(splitFields) > 1 {
+		output = strings.ToLower(output)
+	}
+
+	for _, field := range splitFields[1:] {
+		output += strings.Title(EscapeFields(field, encode))
+	}
+	IsValidStructFieldName(output)
 	return output
 }
 
