@@ -1,5 +1,5 @@
 {
-  "name": "noms-samples",
+  "name": "noms-perf-samples",
   "version": "0.0.0",
   "description": "Shared node modules",
   "license": "Apache-2.0",
@@ -39,7 +39,7 @@
     "yargs": "^4.7.1"
   },
   "scripts": {
-    "preinstall": "ln -sf ../../js/noms/.babelrc && ln -sf ../../js/noms/.flowconfig",
+    "preinstall": "ln -sf ../noms/.babelrc && ln -sf ../noms/.flowconfig",
     "test": "exit 0"
   }
 }
